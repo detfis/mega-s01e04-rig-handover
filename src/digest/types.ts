@@ -24,6 +24,4 @@ export type NightDigest = {
   counts: NightCounts;
 };
 
-export function readNight(_runsDir: string, _night: string): NightDigest | null {
-  throw new Error('not implemented');
-}
+export { readNight } from './reader.js';

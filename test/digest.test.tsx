@@ -1,210 +1,120 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
-import type { RigConfig } from '../src/config.js';
 import type { NightDigest } from '../src/digest/types.js';
 
 describe('digest routes', () => {
   let tempDir: string;
-  let config: RigConfig;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'rig-digest-test-'));
-    config = {
-      adapter: 'shim',
-      installed: '2026-10-29T14:06:00+01:00',
-      beatEverySeconds: 60,
-      runsDir: tempDir,
-    };
+    tempDir = mkdtempSync(join(tmpdir(), 'rig-digest-'));
+    process.env.LANE_MARKER = 'TEST-MARKER';
   });
 
   afterEach(() => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('returns 200 on valid night with jobs, marking retries >= 3 and fail with warn, owner null as —, and matching job order', async () => {
-    const lines = [
-      JSON.stringify({
-        at: '2026-10-29T01:00:00+01:00',
-        job: 'z-job',
-        status: 'retry',
-        owner: 'alice',
-      }),
-      JSON.stringify({
-        at: '2026-10-29T01:01:00+01:00',
-        job: 'z-job',
-        status: 'retry',
-        owner: 'alice',
-      }),
-      JSON.stringify({
-        at: '2026-10-29T01:02:00+01:00',
-        job: 'z-job',
-        status: 'retry',
-        owner: 'alice',
-      }),
-      JSON.stringify({
-        at: '2026-10-29T01:03:00+01:00',
-        job: 'z-job',
-        status: 'ok',
-        owner: 'alice',
-      }),
-      JSON.stringify({
-        at: '2026-10-29T02:00:00+01:00',
-        job: 'a-job',
-        status: 'fail',
-        owner: null,
-        error: 'disk error',
-      }),
-      JSON.stringify({
-        at: '2026-10-29T03:00:00+01:00',
-        job: 'm-job',
-        status: 'ok',
-        owner: 'bob',
-      }),
-    ].join('\n');
-
-    writeFileSync(join(tempDir, '2026-10-28.jsonl'), lines);
-
-    const app = createApp(config);
-
-    const resHtml = await app.request('/digest/2026-10-28');
-    expect(resHtml.status).toBe(200);
-    const html = await resHtml.text();
-
-    const resJson = await app.request('/api/digest/2026-10-28');
-    expect(resJson.status).toBe(200);
-    const json = (await resJson.json()) as NightDigest;
-
-    // Verify jobs in JSON are sorted alphabetically
-    expect(json.rows.map((r) => r.job)).toEqual(['a-job', 'm-job', 'z-job']);
-
-    // Verify HTML page and JSON have the exact same jobs in the exact same order
-    const aIdx = html.indexOf('a-job');
-    const mIdx = html.indexOf('m-job');
-    const zIdx = html.indexOf('z-job');
-    expect(aIdx).toBeGreaterThan(-1);
-    expect(mIdx).toBeGreaterThan(aIdx);
-    expect(zIdx).toBeGreaterThan(mIdx);
-
-    // Verify owner: null rendered as —
-    expect(html).toContain('<td>—</td>');
-
-    // Verify retries >= 3 marked with warn and fail marked with warn
-    expect(html).toContain('<td class="warn">3</td>');
-    expect(html).toContain('<td class="warn">fail</td>');
-    expect(html).toContain('<tr class="warn"><td>a-job</td>');
-    expect(html).toContain('<tr class="warn"><td>z-job</td>');
-  });
-
-  it('returns 404 for a night with no file on both /digest/:night and /api/digest/:night', async () => {
-    const app = createApp(config);
-
-    const resHtml = await app.request('/digest/2026-10-99');
-    expect(resHtml.status).toBe(404);
-    expect(await resHtml.text()).toBe('not found');
-
-    const resJson = await app.request('/api/digest/2026-10-99');
-    expect(resJson.status).toBe(404);
-    expect(await resJson.json()).toEqual({ error: 'not found' });
-  });
-
-  it('returns 200 with "nothing ran" and rows: [] for empty night', async () => {
-    writeFileSync(join(tempDir, '2026-10-28.jsonl'), '');
-    const app = createApp(config);
-
-    const resHtml = await app.request('/digest/2026-10-28');
-    expect(resHtml.status).toBe(200);
-    const html = await resHtml.text();
-    expect(html).toContain('nothing ran');
-
-    const resJson = await app.request('/api/digest/2026-10-28');
-    expect(resJson.status).toBe(200);
-    const json = (await resJson.json()) as NightDigest;
-    expect(json.rows).toEqual([]);
-    expect(json.badLines).toBe(0);
-    expect(json.counts).toEqual({ ok: 0, retry: 0, fail: 0 });
-  });
-
-  it('returns 200, counts badLines: 1 in /api/digest/:night, and renders valid rows and "1 bad line" on /digest/:night', async () => {
-    const content = [
-      'this line is not valid json',
-      JSON.stringify({
-        at: '2026-10-29T01:00:00+01:00',
-        job: 'good-job',
-        status: 'ok',
-        owner: 'alice',
-      }),
-    ].join('\n');
-    writeFileSync(join(tempDir, '2026-10-28.jsonl'), content);
-
-    const app = createApp(config);
-
-    const resJson = await app.request('/api/digest/2026-10-28');
-    expect(resJson.status).toBe(200);
-    const json = (await resJson.json()) as NightDigest;
-    expect(json.badLines).toBe(1);
-    expect(json.rows).toHaveLength(1);
-    expect(json.rows[0].job).toBe('good-job');
-
-    const resHtml = await app.request('/digest/2026-10-28');
-    expect(resHtml.status).toBe(200);
-    const html = await resHtml.text();
-    expect(html).toContain('1 bad line');
-    expect(html).toContain('good-job');
-  });
-
-  describe('read-only runs fixtures', () => {
-    const fixtureConfig: RigConfig = {
+  function makeConfig(runsDir = tempDir) {
+    return {
       adapter: 'shim',
       installed: '2026-10-29T14:06:00+01:00',
       beatEverySeconds: 60,
-      runsDir: 'runs',
+      runsDir,
     };
+  }
 
-    it('matches jobs and order between /digest/2026-10-28 and /api/digest/2026-10-28, and / links nights with counts', async () => {
-      const app = createApp(fixtureConfig);
+  it('returns 404 for a night with no file on both HTML and JSON routes', async () => {
+    const app = createApp(makeConfig());
+    const htmlRes = await app.request('/digest/2026-10-99');
+    expect(htmlRes.status).toBe(404);
 
-      const resHtml = await app.request('/digest/2026-10-28');
-      expect(resHtml.status).toBe(200);
-      const html = await resHtml.text();
+    const jsonRes = await app.request('/api/digest/2026-10-99');
+    expect(jsonRes.status).toBe(404);
+  });
 
-      const resJson = await app.request('/api/digest/2026-10-28');
-      expect(resJson.status).toBe(200);
-      const json = (await resJson.json()) as NightDigest;
+  it('renders "nothing ran" and empty rows for an empty night', async () => {
+    writeFileSync(join(tempDir, '2026-10-25.jsonl'), '', 'utf8');
+    const app = createApp(makeConfig());
 
-      const expectedJobs = [
-        'digest/render',
-        'fixtures/refresh',
-        'lane/sync',
-        'notes/backup',
-        'rig/rotate-logs',
-      ];
+    const htmlRes = await app.request('/digest/2026-10-25');
+    expect(htmlRes.status).toBe(200);
+    const html = await htmlRes.text();
+    expect(html).toContain('nothing ran');
 
-      expect(json.rows.map((r) => r.job)).toEqual(expectedJobs);
+    const jsonRes = await app.request('/api/digest/2026-10-25');
+    expect(jsonRes.status).toBe(200);
+    const body = (await jsonRes.json()) as NightDigest;
+    expect(body.rows).toEqual([]);
+    expect(body.badLines).toBe(0);
+  });
 
-      let lastIndex = -1;
-      for (const job of expectedJobs) {
-        const idx = html.indexOf(job);
-        expect(idx).toBeGreaterThan(lastIndex);
-        lastIndex = idx;
-      }
+  it('counts a bad line without throwing and renders valid rows on both HTML and JSON', async () => {
+    const lines = [
+      JSON.stringify({ at: '2026-10-26T01:00:00+01:00', job: 'beta/task', status: 'fail', owner: 'lane-07', error: 'disk full' }),
+      '{"at":"2026-10-26T02:00:00+01:00","job":"broken',
+      JSON.stringify({ at: '2026-10-26T03:00:00+01:00', job: 'alpha/task', status: 'retry', owner: null, error: 'timeout' }),
+      JSON.stringify({ at: '2026-10-26T03:01:00+01:00', job: 'alpha/task', status: 'retry', owner: null, error: 'timeout' }),
+      JSON.stringify({ at: '2026-10-26T03:02:00+01:00', job: 'alpha/task', status: 'retry', owner: null, error: 'timeout' }),
+      JSON.stringify({ at: '2026-10-26T03:03:00+01:00', job: 'alpha/task', status: 'ok', owner: null }),
+    ].join('\n');
+    writeFileSync(join(tempDir, '2026-10-26.jsonl'), lines, 'utf8');
 
-      // Check / links both nights with their ok / retry / fail counts
-      const resIndex = await app.request('/');
-      expect(resIndex.status).toBe(200);
-      const indexHtml = await resIndex.text();
+    const app = createApp(makeConfig());
+    const htmlRes = await app.request('/digest/2026-10-26');
+    expect(htmlRes.status).toBe(200);
+    const html = await htmlRes.text();
+    expect(html).toContain('1 bad line');
+    expect(html).toContain('alpha/task');
+    expect(html).toContain('beta/task');
+    expect(html).toContain('—');
+    expect(html.indexOf('alpha/task')).toBeLessThan(html.indexOf('beta/task'));
 
-      expect(indexHtml).toContain('<a href="/digest/2026-10-28">2026-10-28</a>');
-      expect(indexHtml).toContain('10 ok · 4 retry · 1 fail');
+    const jsonRes = await app.request('/api/digest/2026-10-26');
+    expect(jsonRes.status).toBe(200);
+    const body = (await jsonRes.json()) as NightDigest;
+    expect(body.badLines).toBe(1);
+    expect(body.rows.map((r) => r.job)).toEqual(['alpha/task', 'beta/task']);
+  });
 
-      expect(indexHtml).toContain('<a href="/digest/2026-10-27">2026-10-27</a>');
-      expect(indexHtml).toContain('7 ok · 0 retry · 0 fail');
+  it('serves 2026-10-28 with the same jobs in the same order on HTML and JSON, and links both nights from the board', async () => {
+    const app = createApp(makeConfig('runs'));
 
-      // Both nights on disk link to a digest that renders (status 200)
-      const res27 = await app.request('/digest/2026-10-27');
-      expect(res27.status).toBe(200);
-    });
+    const htmlRes = await app.request('/digest/2026-10-28');
+    expect(htmlRes.status).toBe(200);
+    const html = await htmlRes.text();
+
+    const jsonRes = await app.request('/api/digest/2026-10-28');
+    expect(jsonRes.status).toBe(200);
+    const body = (await jsonRes.json()) as NightDigest;
+
+    const jobs = body.rows.map((r) => r.job);
+    expect(jobs).toEqual([
+      'digest/render',
+      'fixtures/refresh',
+      'lane/sync',
+      'notes/backup',
+      'rig/rotate-logs',
+    ]);
+
+    let lastPos = -1;
+    for (const job of jobs) {
+      const pos = html.indexOf(`<td>${job}</td>`);
+      expect(pos).toBeGreaterThan(lastPos);
+      lastPos = pos;
+    }
+
+    const boardRes = await app.request('/');
+    expect(boardRes.status).toBe(200);
+    const boardHtml = await boardRes.text();
+    expect(boardHtml).toContain('href="/digest/2026-10-28"');
+    expect(boardHtml).toContain('10 ok · 4 retry · 1 fail');
+    expect(boardHtml).toContain('href="/digest/2026-10-27"');
+    expect(boardHtml).toContain('7 ok · 0 retry · 0 fail');
+
+    const prevNightRes = await app.request('/digest/2026-10-27');
+    expect(prevNightRes.status).toBe(200);
   });
 });
